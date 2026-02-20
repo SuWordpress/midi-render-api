@@ -1,4 +1,3 @@
-import os
 import uuid
 import shutil
 import subprocess
@@ -22,16 +21,15 @@ def root():
 
 def apply_instrument_program(input_midi_path: Path, program: int) -> Path:
     """
-    Inserts a Program Change message at the start of the MIDI
-    so FluidSynth uses the selected instrument sound.
+    Adds a Program Change message so FluidSynth uses the selected instrument.
+    program must be 0–127.
     """
     if program < 0 or program > 127:
         raise HTTPException(status_code=400, detail="program must be between 0 and 127")
 
     mid = MidiFile(str(input_midi_path))
 
-    # Create a new track at the beginning with the program change
-    # This is the safest way (works even if original MIDI has no program events)
+    # Insert a new track at the beginning that sets the instrument
     program_track = MidiTrack()
     program_track.append(Message("program_change", program=program, channel=0, time=0))
     mid.tracks.insert(0, program_track)
@@ -44,8 +42,8 @@ def apply_instrument_program(input_midi_path: Path, program: int) -> Path:
 @app.post("/render")
 async def render_midi(
     midi: UploadFile = File(...),
-    format: str = Form("mp3"),      # "mp3" or "wav"
-    program: int = Form(0)          # MIDI instrument program 0–127
+    format: str = Form("mp3"),
+    program: int = Form(0),
 ):
     fmt = (format or "").lower().strip()
     if fmt not in ["mp3", "wav"]:
@@ -54,22 +52,21 @@ async def render_midi(
     if not SOUNDFONT_PATH.exists():
         raise HTTPException(status_code=500, detail="Soundfont not found in container")
 
-    # Create temp work directory
+    # Create temp working directory
     job_id = str(uuid.uuid4())
     workdir = TMP_DIR / f"job_{job_id}"
     workdir.mkdir(parents=True, exist_ok=True)
 
-    # Save uploaded MIDI to disk
+    # Save uploaded midi file
     input_midi_path = workdir / "input.mid"
     with open(input_midi_path, "wb") as f:
         shutil.copyfileobj(midi.file, f)
 
-    # Apply instrument selection (program change)
+    # Apply selected instrument
     instrument_midi_path = apply_instrument_program(input_midi_path, program)
 
-    # Convert MIDI -> WAV using fluidsynth
+    # MIDI -> WAV using fluidsynth
     wav_path = workdir / "output.wav"
-
     cmd = [
         "fluidsynth",
         "-ni",
