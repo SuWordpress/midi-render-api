@@ -21,7 +21,8 @@ def root():
 
 def apply_instrument_program(input_midi_path: Path, program: int) -> Path:
     """
-    Adds a Program Change message so FluidSynth uses the selected instrument.
+    Applies the selected instrument program to ALL channels used in the MIDI
+    (excluding channel 9 which is usually drums in General MIDI).
     program must be 0–127.
     """
     if program < 0 or program > 127:
@@ -29,12 +30,29 @@ def apply_instrument_program(input_midi_path: Path, program: int) -> Path:
 
     mid = MidiFile(str(input_midi_path))
 
-    # Insert a new track at the beginning that sets the instrument
+    # Collect channels actually used in the MIDI
+    used_channels = set()
+    for track in mid.tracks:
+        for msg in track:
+            if hasattr(msg, "channel"):
+                used_channels.add(msg.channel)
+
+    # Remove drum channel (GM standard: channel 9 is drums)
+    used_channels.discard(9)
+
+    # If no channels were detected, default to channel 0
+    if not used_channels:
+        used_channels = {0}
+
+    # Insert a track at the beginning with program changes for each used channel
     program_track = MidiTrack()
-    program_track.append(Message("program_change", program=program, channel=0, time=0))
+    for ch in sorted(used_channels):
+        program_track.append(Message("program_change", program=program, channel=ch, time=0))
+
     mid.tracks.insert(0, program_track)
 
-    output_midi_path = input_midi_path.parent / "instrument.mid"
+    # Save new MIDI (unique name to avoid collisions)
+    output_midi_path = input_midi_path.parent / f"instrument_{program}.mid"
     mid.save(str(output_midi_path))
     return output_midi_path
 
@@ -51,6 +69,9 @@ async def render_midi(
 
     if not SOUNDFONT_PATH.exists():
         raise HTTPException(status_code=500, detail="Soundfont not found in container")
+
+    # Logs (Railway)
+    print("RENDER REQUEST -> program:", program, "format:", fmt, "filename:", midi.filename)
 
     # Create temp working directory
     job_id = str(uuid.uuid4())
@@ -82,10 +103,18 @@ async def render_midi(
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         err = e.stderr.decode(errors="ignore")
+        print("FLUIDSYNTH ERROR:", err)
         raise HTTPException(status_code=500, detail=f"fluidsynth failed: {err}")
 
     if fmt == "wav":
-        return FileResponse(str(wav_path), media_type="audio/wav", filename="output.wav")
+        response = FileResponse(
+            str(wav_path),
+            media_type="audio/wav",
+            filename=f"output_{job_id}_{program}.wav",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        print("RETURNING WAV:", wav_path)
+        return response
 
     # WAV -> MP3 using ffmpeg
     mp3_path = workdir / "output.mp3"
@@ -105,6 +134,14 @@ async def render_midi(
         subprocess.run(cmd2, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         err = e.stderr.decode(errors="ignore")
+        print("FFMPEG ERROR:", err)
         raise HTTPException(status_code=500, detail=f"ffmpeg failed: {err}")
 
-    return FileResponse(str(mp3_path), media_type="audio/mpeg", filename="output.mp3")
+    response = FileResponse(
+        str(mp3_path),
+        media_type="audio/mpeg",
+        filename=f"output_{job_id}_{program}.mp3",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    print("RETURNING MP3:", mp3_path)
+    return response
