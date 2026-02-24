@@ -1,12 +1,18 @@
 import uuid
 import shutil
 import subprocess
+import logging
 from pathlib import Path
+from typing import Set
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from mido import MidiFile, MidiTrack, Message
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("midi-render-api")
 
 app = FastAPI()
 
@@ -19,40 +25,64 @@ def root():
     return {"ok": True, "service": "midi-render-api"}
 
 
-def apply_instrument_program(input_midi_path: Path, program: int) -> Path:
+def _safe_rmtree(path: Path) -> None:
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def _detect_channels(mid: MidiFile) -> Set[int]:
+    channels: Set[int] = set()
+    for track in mid.tracks:
+        for msg in track:
+            if getattr(msg, "channel", None) is not None:
+                channels.add(int(msg.channel))
+    return channels
+
+
+def apply_instrument_program_all_channels(input_midi_path: Path, program: int) -> Path:
     """
-    Applies the selected instrument program to ALL channels used in the MIDI
-    (excluding channel 9 which is usually drums in General MIDI).
-    program must be 0–127.
+    Force the selected program (instrument) across ALL channels used by the MIDI.
+    Many MIDIs put notes on channel != 0, so changing only channel 0 does nothing.
+
+    - program must be 0–127
+    - We avoid channel 9 by default (standard GM drums channel)
     """
     if program < 0 or program > 127:
         raise HTTPException(status_code=400, detail="program must be between 0 and 127")
 
     mid = MidiFile(str(input_midi_path))
 
-    # Collect channels actually used in the MIDI
-    used_channels = set()
-    for track in mid.tracks:
-        for msg in track:
-            if hasattr(msg, "channel"):
-                used_channels.add(msg.channel)
+    channels = _detect_channels(mid)
+    if not channels:
+        # If MIDI has no channel messages, assume channel 0
+        channels = {0}
 
-    # Remove drum channel (GM standard: channel 9 is drums)
-    used_channels.discard(9)
+    logger.info(f"Detected MIDI channels: {sorted(channels)} | requested program={program}")
 
-    # If no channels were detected, default to channel 0
-    if not used_channels:
-        used_channels = {0}
+    # Remove existing program_change messages (so they don't override ours later)
+    for t in mid.tracks:
+        to_keep = []
+        for msg in t:
+            if msg.type == "program_change":
+                continue
+            to_keep.append(msg)
+        t[:] = to_keep
 
-    # Insert a track at the beginning with program changes for each used channel
+    # Create a new first track with program_change on all relevant channels at time=0
     program_track = MidiTrack()
-    for ch in sorted(used_channels):
+
+    for ch in sorted(channels):
+        # Skip GM drum channel (channel 10 in MIDI spec, index 9)
+        if ch == 9:
+            continue
         program_track.append(Message("program_change", program=program, channel=ch, time=0))
 
+    # Insert at the beginning so it's applied before note events
     mid.tracks.insert(0, program_track)
 
-    # Save new MIDI (unique name to avoid collisions)
-    output_midi_path = input_midi_path.parent / f"instrument_{program}.mid"
+    output_midi_path = input_midi_path.parent / "instrument.mid"
     mid.save(str(output_midi_path))
     return output_midi_path
 
@@ -68,23 +98,26 @@ async def render_midi(
         raise HTTPException(status_code=400, detail="format must be mp3 or wav")
 
     if not SOUNDFONT_PATH.exists():
-        raise HTTPException(status_code=500, detail="Soundfont not found in container")
-
-    # Logs (Railway)
-    print("RENDER REQUEST -> program:", program, "format:", fmt, "filename:", midi.filename)
+        raise HTTPException(status_code=500, detail="Soundfont not found in container (/app/soundfont.sf2)")
 
     # Create temp working directory
     job_id = str(uuid.uuid4())
     workdir = TMP_DIR / f"job_{job_id}"
     workdir.mkdir(parents=True, exist_ok=True)
 
+    logger.info(f"Job {job_id} started | fmt={fmt} | program={program} | filename={midi.filename}")
+
     # Save uploaded midi file
     input_midi_path = workdir / "input.mid"
-    with open(input_midi_path, "wb") as f:
-        shutil.copyfileobj(midi.file, f)
+    try:
+        with open(input_midi_path, "wb") as f:
+            shutil.copyfileobj(midi.file, f)
+    except Exception as e:
+        _safe_rmtree(workdir)
+        raise HTTPException(status_code=400, detail=f"Failed to read uploaded MIDI: {e}")
 
-    # Apply selected instrument
-    instrument_midi_path = apply_instrument_program(input_midi_path, program)
+    # Apply selected instrument across channels
+    instrument_midi_path = apply_instrument_program_all_channels(input_midi_path, program)
 
     # MIDI -> WAV using fluidsynth
     wav_path = workdir / "output.wav"
@@ -100,21 +133,21 @@ async def render_midi(
     ]
 
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if p.stderr:
+            logger.info(f"fluidsynth stderr (job {job_id}): {p.stderr.decode(errors='ignore')[:1000]}")
     except subprocess.CalledProcessError as e:
         err = e.stderr.decode(errors="ignore")
-        print("FLUIDSYNTH ERROR:", err)
+        _safe_rmtree(workdir)
         raise HTTPException(status_code=500, detail=f"fluidsynth failed: {err}")
 
     if fmt == "wav":
-        response = FileResponse(
+        return FileResponse(
             str(wav_path),
             media_type="audio/wav",
-            filename=f"output_{job_id}_{program}.wav",
+            filename="output.wav",
+            background=BackgroundTask(_safe_rmtree, workdir),
         )
-        response.headers["Cache-Control"] = "no-store"
-        print("RETURNING WAV:", wav_path)
-        return response
 
     # WAV -> MP3 using ffmpeg
     mp3_path = workdir / "output.mp3"
@@ -131,17 +164,18 @@ async def render_midi(
     ]
 
     try:
-        subprocess.run(cmd2, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p2 = subprocess.run(cmd2, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if p2.stderr:
+            logger.info(f"ffmpeg stderr (job {job_id}): {p2.stderr.decode(errors='ignore')[:1000]}")
     except subprocess.CalledProcessError as e:
         err = e.stderr.decode(errors="ignore")
-        print("FFMPEG ERROR:", err)
+        _safe_rmtree(workdir)
         raise HTTPException(status_code=500, detail=f"ffmpeg failed: {err}")
 
-    response = FileResponse(
+    logger.info(f"Job {job_id} complete | returning mp3")
+    return FileResponse(
         str(mp3_path),
         media_type="audio/mpeg",
-        filename=f"output_{job_id}_{program}.mp3",
+        filename="output.mp3",
+        background=BackgroundTask(_safe_rmtree, workdir),
     )
-    response.headers["Cache-Control"] = "no-store"
-    print("RETURNING MP3:", mp3_path)
-    return response
