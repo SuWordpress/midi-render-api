@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# System deps
+# Install system deps: fluidsynth + ffmpeg + wget + certificates
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fluidsynth \
     ffmpeg \
@@ -10,15 +10,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Python deps
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# App code
 COPY main.py .
 
-# Download a General MIDI soundfont (common default)
-# If this URL ever changes, swap it for another GM .sf2 file.
-RUN wget -O /app/soundfont.sf2 https://github.com/FluidSynth/fluidsynth/raw/master/sf2/FluidR3_GM.sf2
+# Download a General MIDI soundfont (reliable raw link)
+RUN wget -O /app/soundfont.sf2 https://raw.githubusercontent.com/FluidSynth/fluidsynth/master/sf2/FluidR3_GM.sf2
 
+# Railway expects PORT
 ENV PORT=8080
 EXPOSE 8080
 
