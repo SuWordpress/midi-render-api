@@ -1,15 +1,12 @@
 FROM python:3.11-slim
 
-# System dependencies:
-# - fluidsynth: renders MIDI -> WAV
-# - ffmpeg: converts WAV -> MP3
-# - fluid-soundfont-gm: General MIDI soundfont package (no wget, no 404)
+# System deps: fluidsynth, ffmpeg (includes ffprobe), wget
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fluidsynth \
     ffmpeg \
-    fluid-soundfont-gm \
+    wget \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -18,7 +15,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
 
-# Railway uses PORT
+# ✅ Download a known good SoundFont (FluidR3_GM)
+RUN wget -O /app/soundfont.sf2 \
+    https://member.keymusician.com/Member/FluidR3_GM/FluidR3_GM.sf2
+
 ENV PORT=8080
 EXPOSE 8080
 
