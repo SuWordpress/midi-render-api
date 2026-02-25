@@ -47,6 +47,7 @@ async def render_midi(
     program: int = Form(0),
 ):
     fmt = (format or "").lower().strip()
+    print(f"[render] format={fmt} program={program} midi_filename={midi.filename}")
     if fmt not in ("mp3", "wav"):
         raise HTTPException(status_code=400, detail="format must be mp3 or wav")
 
@@ -107,3 +108,4 @@ async def render_midi(
         raise HTTPException(status_code=500, detail=e.stderr.decode(errors="ignore"))
 
     return FileResponse(str(mp3_path), media_type="audio/mpeg", filename="output.mp3")
+
