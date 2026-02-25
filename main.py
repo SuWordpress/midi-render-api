@@ -26,14 +26,18 @@ def apply_instrument_program(input_midi_path: Path, program: int) -> Path:
 
     mid = MidiFile(str(input_midi_path))
 
-    # Apply program change to all channels except drums (9)
-    program_track = MidiTrack()
-    for ch in range(16):
-        if ch == 9:
-            continue
-        program_track.append(Message("program_change", program=program, channel=ch, time=0))
+    # Remove ALL existing program_change messages
+    for track in mid.tracks:
+        new_msgs = []
+        for msg in track:
+            if msg.type != "program_change":
+                new_msgs.append(msg)
+        track.clear()
+        track.extend(new_msgs)
 
-    mid.tracks.insert(0, program_track)
+    # Add program change at start of EVERY track (safer)
+    for track in mid.tracks:
+        track.insert(0, Message("program_change", program=program, channel=0, time=0))
 
     output_midi_path = input_midi_path.parent / "instrument.mid"
     mid.save(str(output_midi_path))
@@ -108,4 +112,5 @@ async def render_midi(
         raise HTTPException(status_code=500, detail=e.stderr.decode(errors="ignore"))
 
     return FileResponse(str(mp3_path), media_type="audio/mpeg", filename="output.mp3")
+
 
