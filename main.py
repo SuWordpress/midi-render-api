@@ -11,8 +11,8 @@ from mido import MidiFile, MidiTrack, Message
 app = FastAPI()
 
 TMP_DIR = Path("/tmp")
-SOUNDFONT_PATH = Path("/app/soundfont.sf2")
-
+import os
+SOUNDFONT_PATH = Path(os.getenv("SOUNDFONT_PATH", "/usr/share/sounds/sf2/FluidR3_GM.sf2"))
 # ✅ GM (General MIDI) program map (0–127)
 GM_PROGRAM_NAMES = {
     0: "Acoustic Grand Piano",
@@ -275,3 +275,4 @@ async def render_midi(
     resp.headers["X-Program"] = str(program)
     resp.headers["X-Instrument-Name"] = instrument_name
     return resp
+
