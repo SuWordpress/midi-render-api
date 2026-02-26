@@ -1,9 +1,10 @@
 FROM python:3.11-slim
 
-# Install system dependencies
+# System deps: fluidsynth, ffmpeg (includes ffprobe), wget
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fluidsynth \
     ffmpeg \
+    wget \
     ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
@@ -14,10 +15,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
 
-# Use default system soundfont installed with fluidsynth
-ENV SOUNDFONT_PATH=/usr/share/sounds/sf2/FluidR3_GM.sf2
+# ✅ Download a known good SoundFont (FluidR3_GM)
+RUN wget -O /app/soundfont.sf2 \
+    https://member.keymusician.com/Member/FluidR3_GM/FluidR3_GM.sf2
 
-ENV PORT=10000
-EXPOSE 10000
+ENV PORT=8080
+EXPOSE 8080
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
+CMD ["bash", "-lc", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
