@@ -1,12 +1,15 @@
 FROM python:3.11-slim
 
-# System deps: fluidsynth + ffmpeg (includes ffprobe) + a stable soundfont package
+# System dependencies:
+# - fluidsynth: renders MIDI -> WAV
+# - ffmpeg: converts WAV -> MP3
+# - fluid-soundfont-gm: General MIDI soundfont package (no wget, no 404)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fluidsynth \
     ffmpeg \
     fluid-soundfont-gm \
     ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -15,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
 
+# Railway uses PORT
 ENV PORT=8080
 EXPOSE 8080
 
