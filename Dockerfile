@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# System deps: fluidsynth + ffmpeg (ffprobe) + a REAL soundfont package
+# System deps: fluidsynth + ffmpeg (includes ffprobe) + a stable soundfont package
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fluidsynth \
     ffmpeg \
